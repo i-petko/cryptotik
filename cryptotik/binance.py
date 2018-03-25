@@ -6,6 +6,8 @@ import hmac
 import hashlib
 import time
 import requests
+import asyncio
+import websockets
 from decimal import Decimal
 from cryptotik.common import (headers, ExchangeWrapper,
                               NormalizedExchangeWrapper)
@@ -499,3 +501,72 @@ class BinanceNormalized(Binance, NormalizedExchangeWrapper):
             })
 
         return r
+
+class BinanceSocket(Binance):
+
+    url_base = 'wss://stream.binance.com:9443'
+    single_stream_url = url_base + "/ws/"
+    combined_stream_url = url_base + "/stream?streams="
+    delimiter = ""
+
+    def __init__(self, apikey=None, secret=None, timeout=None, proxy=None):
+        super(BinanceSocket, self).__init__(apikey, secret, timeout, proxy)
+
+    def format_pair(self, pair):
+        '''Format the pair argument to format understood by remote API.'''
+        return pair.replace("-", self.delimiter).lower()
+
+    async def socket(self, stream):
+        async with websockets.connect(stream) as websocket:
+            while True:
+                await websocket.recv()
+
+    def run_stream(self, stream):
+        loop = asyncio.get_event_loop()
+        try:
+            loop.run_until_complete(self.socket(self.single_stream_url + stream))
+        except KeyboardInterrupt:
+            loop = asyncio.new_event_loop()
+ 
+    def get_market_depth_stream(self, market):
+        ''' Order book price and quantity depth updates used to locally manage an order book pushed every second. '''
+
+        return self.run_stream(self.format_pair(market) + '@depth')
+
+
+    def get_market_depth_stream_partial(self, market, level=5):
+        ''' Top <levels> bids and asks, pushed every second. Valid <levels> are 5, 10, or 20. '''
+
+        if level not in (5, 10, 20):
+            raise ValueError('Valid <levels> are 5, 10, or 20.')
+        return self.run_stream(self.format_pair(market) + '@depth' + str(level))
+
+    def get_market_ticker_stream(self, market):
+        ''' 24hr Ticker statistics for a single symbol pushed every second '''
+
+        return self.run_stream(self.format_pair(market) + '@ticker')
+    
+    def get_all_markets_ticker_stream(self):
+        ''' 24hr Ticker statistics for a single symbol pushed every second '''
+
+        return self.run_stream('!ticker@arr')
+
+    def get_kline_stream(self, market, interval):
+        ''' The Kline/Candlestick Stream push updates to the current klines/candlestick every second.'''
+
+        valid_intervals = ('1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M')
+        
+        if interval not in valid_intervals:
+            raise ValueError('Valid chart intervals are: ' + str(valid_intervals))
+        
+        return self.run_stream(self.format_pair(market) + '@kline_' + interval)
+
+    def get_market_trade_stream(self, market):
+        ''' The Trade Streams push raw trade information; each trade has a unique buyer and seller. '''
+
+        return self.run_stream(self.format_pair(market) + '@trade')
+
+    def get_market_aggregate_trade_stream(self, market):
+        ''' The Aggregate Trade Streams push trade information that is aggregated for a single taker order. '''
+
+        return self.run_stream(self.format_pair(market) + '@aggTrade')
